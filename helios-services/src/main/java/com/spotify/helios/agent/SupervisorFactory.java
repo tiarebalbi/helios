@@ -24,6 +24,7 @@ package com.spotify.helios.agent;
 import com.spotify.docker.client.DockerClient;
 import com.spotify.helios.common.descriptors.Job;
 import com.spotify.helios.common.descriptors.TaskStatus;
+import com.spotify.helios.secretprovider.SecretProvider;
 import com.spotify.helios.serviceregistration.ServiceRegistrar;
 import com.spotify.helios.servicescommon.statistics.SupervisorMetrics;
 
@@ -44,6 +45,7 @@ public class SupervisorFactory {
   private final String namespace;
   private final Map<String, String> envVars;
   private final ServiceRegistrar registrar;
+  private final SecretProvider secretProvider;
   private final ContainerDecorator containerDecorator;
   private final String host;
   private final SupervisorMetrics metrics;
@@ -53,6 +55,7 @@ public class SupervisorFactory {
   public SupervisorFactory(final AgentModel model, final DockerClient dockerClient,
                            final Map<String, String> envVars,
                            final ServiceRegistrar registrar,
+                           final SecretProvider secretProvider,
                            final ContainerDecorator containerDecorator,
                            final String host,
                            final SupervisorMetrics supervisorMetrics,
@@ -64,6 +67,7 @@ public class SupervisorFactory {
     this.model = checkNotNull(model, "model");
     this.envVars = checkNotNull(envVars, "envVars");
     this.registrar = registrar;
+    this.secretProvider = secretProvider;
     this.containerDecorator = containerDecorator;
     this.host = host;
     this.metrics = supervisorMetrics;

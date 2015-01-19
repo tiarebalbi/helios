@@ -32,6 +32,7 @@ import com.spotify.docker.client.DockerCertificateException;
 import com.spotify.docker.client.DockerCertificates;
 import com.spotify.docker.client.DockerClient;
 import com.spotify.helios.common.descriptors.JobId;
+import com.spotify.helios.secretprovider.SecretProvider;
 import com.spotify.helios.serviceregistration.ServiceRegistrar;
 import com.spotify.helios.servicescommon.ManagedStatsdReporter;
 import com.spotify.helios.servicescommon.PersistentAtomicReference;
@@ -61,10 +62,6 @@ import org.eclipse.jetty.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.dropwizard.configuration.ConfigurationException;
-import io.dropwizard.lifecycle.Managed;
-import io.dropwizard.setup.Environment;
-
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -74,9 +71,14 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import io.dropwizard.configuration.ConfigurationException;
+import io.dropwizard.lifecycle.Managed;
+import io.dropwizard.setup.Environment;
+
 import static com.google.common.base.Charsets.UTF_8;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.spotify.helios.agent.Agent.EMPTY_EXECUTIONS;
+import static com.spotify.helios.servicescommon.SecretProviders.createSecretProvider;
 import static com.spotify.helios.servicescommon.ServiceRegistrars.createServiceRegistrar;
 import static java.lang.management.ManagementFactory.getOperatingSystemMXBean;
 import static java.lang.management.ManagementFactory.getRuntimeMXBean;
@@ -106,6 +108,7 @@ public class AgentService extends AbstractIdleService implements Managed {
   private final ZooKeeperAgentModel model;
   private final Metrics metrics;
   private final ServiceRegistrar serviceRegistrar;
+  private final SecretProvider secretProvider;
 
   private ZooKeeperRegistrar zkRegistrar;
 
@@ -194,6 +197,10 @@ public class AgentService extends AbstractIdleService implements Managed {
                                                    config.getServiceRegistryAddress(),
                                                    config.getDomain());
 
+    // Set up secret provier
+    this.secretProvider = createSecretProvider(config.getSecretProviderPlugin(),
+                                               config.getSecretResourceAddress());
+
     final ZooKeeperNodeUpdaterFactory nodeUpdaterFactory =
         new ZooKeeperNodeUpdaterFactory(zooKeeperClient);
 
@@ -236,7 +243,7 @@ public class AgentService extends AbstractIdleService implements Managed {
 
     final SupervisorFactory supervisorFactory = new SupervisorFactory(
         model, monitoredDockerClient,
-        config.getEnvVars(), serviceRegistrar,
+        config.getEnvVars(), serviceRegistrar, secretProvider,
         config.getRedirectToSyslog() != null
         ? new SyslogRedirectingContainerDecorator(config.getRedirectToSyslog())
         : new NoOpContainerDecorator(),

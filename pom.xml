@@ -107,6 +107,7 @@
   <modules>
     <module>helios-client</module>
     <module>helios-service-registration</module>
+    <module>helios-secret-provider</module>
     <module>helios-tools</module>
     <module>helios-testing</module>
     <module>helios-testing-common</module>

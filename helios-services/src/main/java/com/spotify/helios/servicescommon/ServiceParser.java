@@ -60,6 +60,8 @@ public class ServiceParser {
   private final Argument domainArg;
   private final Argument serviceRegistryArg;
   private final Argument serviceRegistrarPluginArg;
+  private final Argument secretProviderPluginArg;
+  private final Argument secretResourceAddressArg;
   private final Argument zooKeeperConnectStringArg;
   private final Argument zooKeeperSessiontimeoutArg;
   private final Argument zooKeeperConnectiontimeoutArg;
@@ -94,6 +96,14 @@ public class ServiceParser {
     serviceRegistrarPluginArg = parser.addArgument("--service-registrar-plugin")
         .type(fileType().verifyExists().verifyCanRead())
         .help("Service registration plugin.");
+
+    secretProviderPluginArg = parser.addArgument("--secret-provider-plugin")
+        .type(fileType().verifyExists().verifyCanRead())
+        .help("Secret provider plugin.");
+
+    secretResourceAddressArg = parser.addArgument("--secret-resource-address")
+        .type(fileType().verifyExists().verifyCanRead())
+        .help("Secret resource address (can be a file on local file system or a URL).");
 
     zooKeeperConnectStringArg = parser.addArgument("--zk")
         .setDefault("localhost:2181")
@@ -188,6 +198,15 @@ public class ServiceParser {
   public Path getServiceRegistrarPlugin() {
     final File plugin = (File) options.get(serviceRegistrarPluginArg.getDest());
     return plugin != null ? plugin.toPath() : null;
+  }
+
+  public Path getSecretProviderPlugin() {
+    final File plugin = (File) options.get(secretProviderPluginArg.getDest());
+    return plugin != null ? plugin.toPath() : null;
+  }
+
+  public String getSecretResourceAddress() {
+    return options.getString(secretResourceAddressArg.getDest());
   }
 
   public String getZooKeeperConnectString() {

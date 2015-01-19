@@ -123,6 +123,8 @@ public class AgentParser extends ServiceParser {
         .setSentryDsn(getSentryDsn())
         .setServiceRegistryAddress(getServiceRegistryAddress())
         .setServiceRegistrarPlugin(getServiceRegistrarPlugin())
+        .setSecretProviderPlugin(getSecretProviderPlugin())
+        .setSecretResourceAddress(getSecretResourceAddress())
         .setAdminPort(options.getInt(adminArg.getDest()))
         .setHttpEndpoint(httpAddress)
         .setNoHttp(options.getBoolean(noHttpArg.getDest()));
