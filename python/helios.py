@@ -2,6 +2,7 @@
 # -*- coding: UTF-8 -*-
 
 from __future__ import print_function
+import getpass
 
 import json
 import requests
@@ -10,6 +11,19 @@ import urllib
 
 from argparse import ArgumentParser
 from urlparse import urljoin
+from requests.exceptions import ConnectionError
+import time
+
+DEFAULT_MASTER = 'http://localhost:5801'
+DEFAULT_USERNAME = getpass.getuser()
+RETRY_TIMEOUT_MILLIS = 60000
+
+
+current_milli_time = lambda: int(round(time.time() * 1000))
+
+
+class TimeoutException(Exception):
+    pass
 
 
 def std(*args, **kwargs):
@@ -33,12 +47,24 @@ class Client(object):
         super(Client, self).__init__()
         self.__master = master
 
+    @staticmethod
+    def __connect(req_func, uri, params={}):
+        deadline = current_milli_time() + RETRY_TIMEOUT_MILLIS
+        while current_milli_time() < deadline:
+            try:
+                r = req_func(uri, params=params)
+                return r
+            except ConnectionError as e:
+                err('Failed to connect, retrying in 5 seconds.')
+                time.sleep(5)
+        raise TimeoutException('Timed out connecting to master.')
+
     def __uri(self, resource, path_params={}):
         encoded_path_params = {k: urllib.quote(v) for k, v in path_params.iteritems()}
         return urljoin(self.__master, resource.format(**encoded_path_params))
 
     def __get(self, resource, path_params={}, params={}):
-        r = requests.get(self.__uri(resource, path_params=path_params), params=params)
+        r = self.__connect(requests.get, self.__uri(resource, path_params=path_params), params=params)
         r.raise_for_status()
         return r
 
@@ -52,7 +78,7 @@ class Client(object):
         return self.__get('/jobs/{job_id}', path_params=dict(job_id=job_id)).json()
 
     def host_status(self, name):
-        return self.__get('/hosts/{name}/status', name=name).json()
+        return self.__get('/hosts/{name}/status', path_params=dict(name=name)).json()
 
     def version(self):
         return self.__get('/version').text
@@ -94,12 +120,25 @@ def cmd_version(client, args):
 
 
 def main():
-    parser = DefaultHelpParser(description='Helios Client')
+    parser = DefaultHelpParser(description='Spotify Helios CLI')
 
     subparsers = parser.add_subparsers(title='commands', description='')
 
     def add_global_args(parser):
-        parser.add_argument('-z', '--master', help='master to connect to', default='http://localhost:5801')
+        parser.add_argument('-z', '--master',
+                            help='Master to connect to. (default: %s)' % DEFAULT_MASTER,
+                            default=DEFAULT_MASTER)
+        parser.add_argument('-d', '--domains',
+                            help='List of comma-separated domains. (default: [])',
+                            default='[]')
+        parser.add_argument('--srv-name',
+                            help='Master\'s SRV name. (default: helios)',
+                            default='helios')
+        parser.add_argument('-u', '--username',
+                            help='username (default: %s)' % DEFAULT_USERNAME,
+                            default=DEFAULT_USERNAME)
+        parser.add_argument('-v', '--verbose', action='count', help='(default: 0)', default=0)
+        parser.add_argument('--json', help='JSON output (default: false)', default=False)
 
     def command(f, *args, **kwargs):
         parser = subparsers.add_parser(*args, **kwargs)
