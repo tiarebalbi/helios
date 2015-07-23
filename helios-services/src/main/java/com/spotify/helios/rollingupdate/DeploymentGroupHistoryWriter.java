@@ -65,7 +65,7 @@ public class DeploymentGroupHistoryWriter extends QueueingHistoryWriter<Deployme
   public DeploymentGroupHistoryWriter(final ZooKeeperClient client,
                                       final Path backingFile)
       throws IOException, InterruptedException {
-    super(client, backingFile);
+    super(client, backingFile, taskHistoryPath);
   }
 
   public void saveHistoryItem(final DeploymentGroupEvent event) {

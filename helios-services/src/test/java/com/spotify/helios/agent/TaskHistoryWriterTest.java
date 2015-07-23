@@ -33,6 +33,7 @@ import com.spotify.helios.common.descriptors.TaskStatus;
 import com.spotify.helios.common.descriptors.TaskStatus.State;
 import com.spotify.helios.common.descriptors.TaskStatusEvent;
 import com.spotify.helios.master.ZooKeeperMasterModel;
+import com.spotify.helios.servicescommon.TaskHistoryPath;
 import com.spotify.helios.servicescommon.coordination.DefaultZooKeeperClient;
 import com.spotify.helios.servicescommon.coordination.Paths;
 import com.spotify.helios.servicescommon.coordination.ZooKeeperClient;
@@ -83,7 +84,7 @@ public class TaskHistoryWriterTest {
 
   private ZooKeeperTestManager zk;
   private DefaultZooKeeperClient client;
-  private TaskHistoryWriter writer;
+  private TaskHistoryPath writer;
   private ZooKeeperMasterModel masterModel;
   private Path agentStateDirs;
 
@@ -111,7 +112,7 @@ public class TaskHistoryWriterTest {
 
   private void makeWriter(final ZooKeeperClient client)
           throws Exception {
-    writer = new TaskHistoryWriter(HOSTNAME, client, agentStateDirs.resolve("task-history.json"));
+    writer = new TaskHistoryPath(HOSTNAME, client, agentStateDirs.resolve("task-history.json"));
     writer.startUp();
   }
 

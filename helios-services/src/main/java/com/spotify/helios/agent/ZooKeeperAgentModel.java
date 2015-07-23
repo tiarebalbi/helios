@@ -32,6 +32,8 @@ import com.spotify.helios.common.descriptors.TaskStatus;
 import com.spotify.helios.common.descriptors.TaskStatusEvent;
 import com.spotify.helios.servicescommon.KafkaRecord;
 import com.spotify.helios.servicescommon.KafkaSender;
+import com.spotify.helios.servicescommon.QueueingHistoryWriter;
+import com.spotify.helios.servicescommon.TaskHistoryPath;
 import com.spotify.helios.servicescommon.coordination.Paths;
 import com.spotify.helios.servicescommon.coordination.PersistentPathChildrenCache;
 import com.spotify.helios.servicescommon.coordination.ZooKeeperClient;
@@ -46,6 +48,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -68,7 +71,8 @@ public class ZooKeeperAgentModel extends AbstractIdleService implements AgentMod
 
   private final PersistentPathChildrenCache<Task> tasks;
   private final ZooKeeperUpdatingPersistentDirectory taskStatuses;
-  private final TaskHistoryWriter historyWriter;
+  private final QueueingHistoryWriter historyWriter;
+  private final TaskHistoryPath taskHistoryPath;
   private final KafkaSender kafkaSender;
 
   private final String agent;
@@ -76,7 +80,8 @@ public class ZooKeeperAgentModel extends AbstractIdleService implements AgentMod
 
   public ZooKeeperAgentModel(final ZooKeeperClientProvider provider,
                              final KafkaClientProvider kafkaProvider, final String host,
-                             final Path stateDirectory) throws IOException, InterruptedException {
+                             final Path stateDirectory)
+      throws IOException, InterruptedException, NoSuchAlgorithmException {
     // TODO(drewc): we're constructing too many heavyweight things in the ctor, these kinds of
     // things should be passed in/provider'd/etc.
     final ZooKeeperClient client = provider.get("ZooKeeperAgentModel_ctor");
@@ -92,8 +97,9 @@ public class ZooKeeperAgentModel extends AbstractIdleService implements AgentMod
                                                                     provider,
                                                                     taskStatusFile,
                                                                     Paths.statusHostJobs(host));
-    this.historyWriter = new TaskHistoryWriter(
-        host, client, stateDirectory.resolve(TASK_HISTORY_FILENAME));
+
+    taskHistoryPath = new TaskHistoryPath(host);
+    this.historyWriter = new QueueingHistoryWriter(client, stateDirectory.resolve(TASK_HISTORY_FILENAME), taskHistoryPath);
 
     this.kafkaSender = new KafkaSender(
         kafkaProvider.getProducer(new StringSerializer(), new ByteArraySerializer()));
@@ -157,8 +163,8 @@ public class ZooKeeperAgentModel extends AbstractIdleService implements AgentMod
       throws InterruptedException {
     log.debug("setting task status: {}", status);
     taskStatuses.put(jobId.toString(), status.toJsonBytes());
-    historyWriter.saveHistoryItem(status);
     final TaskStatusEvent event = new TaskStatusEvent(status, System.currentTimeMillis(), agent);
+    historyWriter.add(event);
     kafkaSender.send(KafkaRecord.of(TaskStatusEvent.KAFKA_TOPIC, event.toJsonBytes()));
   }
 

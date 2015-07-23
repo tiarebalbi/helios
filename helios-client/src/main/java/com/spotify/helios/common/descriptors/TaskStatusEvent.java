@@ -25,6 +25,7 @@ import com.google.common.base.Objects;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.spotify.helios.common.QueueableEvent;
 
 /**
  * Represents something that has happened to a Task.
@@ -39,7 +40,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * </pre>
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class TaskStatusEvent extends Descriptor {
+public class TaskStatusEvent extends Descriptor implements QueueableEvent {
 
   public static final String KAFKA_TOPIC = "HeliosTaskStatusEvents";
 
@@ -81,5 +82,15 @@ public class TaskStatusEvent extends Descriptor {
         .add("host", host)
         .add("status", status)
         .toString();
+  }
+
+  @Override
+  public long timestamp() {
+    return timestamp;
+  }
+
+  @Override
+  public byte[] data() {
+    return toJsonBytes();
   }
 }
