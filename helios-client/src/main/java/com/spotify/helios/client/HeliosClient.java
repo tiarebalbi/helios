@@ -380,7 +380,12 @@ public class HeliosClient implements AutoCloseable {
 
     final URLConnection urlConnection = ipUri.toURL().openConnection();
     final HttpURLConnection connection = (HttpURLConnection) urlConnection;
+
+    // We verify the TLS certificate against the original hostname since verifying against the
+    // IP address will fail
     if (urlConnection instanceof HttpsURLConnection) {
+      System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
+      connection.setRequestProperty("Host", hostname);
       ((HttpsURLConnection) connection).setHostnameVerifier(new HostnameVerifier() {
         @Override
         public boolean verify(String ip, SSLSession sslSession) {
