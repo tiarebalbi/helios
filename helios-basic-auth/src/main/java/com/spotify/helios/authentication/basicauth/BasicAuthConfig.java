@@ -1,0 +1,77 @@
+/*
+ * Copyright (c) 2015 Spotify AB.
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package com.spotify.helios.authentication.basicauth;
+
+public class BasicAuthConfig {
+
+  public static final String HEADER = "WWW-Authenticate";
+
+  enum KeyStoreType {
+    FILE("file"),
+    LDAP("ldap"),;
+
+    private final String type;
+
+    private KeyStoreType(final String type) {
+      this.type = type;
+    }
+
+    @Override
+    public String toString() {
+      return type;
+    }
+  }
+
+  private KeyStoreType keyStoreType;
+  private String filePath;
+  private String ldapUrl;
+  private String ldapSearchPath;
+  private String ldapPasswordAttr;
+
+  public KeyStoreType getKeyStoreType() {
+    return keyStoreType;
+  }
+
+  public String getFilePath() {
+    return filePath;
+  }
+
+  public String getLdapUrl() {
+    return ldapUrl;
+  }
+
+  public void setLdapUrl(String ldapUrl) {
+    this.ldapUrl = ldapUrl;
+  }
+
+  public String getLdapSearchPath() {
+    return ldapSearchPath;
+  }
+
+  public void setLdapSearchPath(String ldapSearchPath) {
+    this.ldapSearchPath = ldapSearchPath;
+  }
+
+  public String getLdapPasswordAttr() {
+    return ldapPasswordAttr;
+  }
+}

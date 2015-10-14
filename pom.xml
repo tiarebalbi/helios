@@ -117,6 +117,7 @@
     <module>helios-service-registration</module>
     <module>helios-authentication</module>
     <module>helios-crtauth</module>
+    <module>helios-basic-auth</module>
     <module>helios-tools</module>
     <module>helios-testing</module>
     <module>helios-testing-common</module>
