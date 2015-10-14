@@ -31,6 +31,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.google.common.net.InetAddresses;
 import com.google.common.util.concurrent.AsyncFunction;
 import com.google.common.util.concurrent.FutureFallback;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -67,7 +68,22 @@ import com.spotify.helios.common.protocol.SetGoalResponse;
 import com.spotify.helios.common.protocol.TaskStatusEvents;
 import com.spotify.helios.common.protocol.VersionResponse;
 
-import org.apache.http.conn.ssl.DefaultHostnameVerifier;
+import org.apache.http.Header;
+import org.apache.http.HttpHost;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.RequestBuilder;
+import org.apache.http.config.Registry;
+import org.apache.http.config.RegistryBuilder;
+import org.apache.http.conn.DnsResolver;
+import org.apache.http.conn.socket.ConnectionSocketFactory;
+import org.apache.http.conn.socket.PlainConnectionSocketFactory;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
+import org.apache.http.entity.ByteArrayEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,14 +91,11 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Field;
 import java.net.ConnectException;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.URLConnection;
 import java.net.UnknownHostException;
 import java.util.Collections;
 import java.util.List;
@@ -95,12 +108,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLSession;
-
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.transform;
 import static com.google.common.util.concurrent.Futures.withFallback;
@@ -222,16 +232,13 @@ public class HeliosClient implements AutoCloseable {
     return executorService.submit(new Callable<Response>() {
       @Override
       public Response call() throws Exception {
-        final HttpURLConnection connection = connect(uri, method, entityBytes, headers);
-        final int status = connection.getResponseCode();
-        final InputStream rawStream;
-        if (status / 100 != 2) {
-          rawStream = connection.getErrorStream();
-        } else {
-          rawStream = connection.getInputStream();
-        }
-        final boolean gzip = isGzipCompressed(connection);
-        final InputStream stream = gzip ? new GZIPInputStream(rawStream) : rawStream;
+        final CloseableHttpResponse response = connect(uri, method, entityBytes, headers);
+        final int status = response.getStatusLine().getStatusCode();
+        final InputStream rawStream = response.getEntity() == null ?
+                                      null : response.getEntity().getContent();
+        final boolean gzip = isGzipCompressed(response);
+        final InputStream stream = (gzip && rawStream != null) ?
+                                   new GZIPInputStream(rawStream) : rawStream;
         final ByteArrayOutputStream payload = new ByteArrayOutputStream();
         if (stream != null) {
           int n;
@@ -240,7 +247,14 @@ public class HeliosClient implements AutoCloseable {
             payload.write(buffer, 0, n);
           }
         }
-        URI realUri = connection.getURL().toURI();
+
+        final String realUri;
+        final Header locHeader = response.getFirstHeader("Location");
+        if (locHeader != null && !isNullOrEmpty(locHeader.getValue())) {
+          realUri = locHeader.getValue();
+        } else {
+          realUri = uri.toString();
+        }
         if (log.isTraceEnabled()) {
           log.trace("rep: {} {} {} {} {} gzip:{}",
                     method, realUri, status, payload.size(), decode(payload), gzip);
@@ -248,17 +262,17 @@ public class HeliosClient implements AutoCloseable {
           log.debug("rep: {} {} {} {} gzip:{}",
                     method, realUri, status, payload.size(), gzip);
         }
-        checkprotocolVersionStatus(connection);
+        checkprotocolVersionStatus(response);
         return new Response(method, uri, status, payload.toByteArray());
       }
 
-      private boolean isGzipCompressed(final HttpURLConnection connection) {
-        final List<String> encodings = connection.getHeaderFields().get("Content-Encoding");
+      private boolean isGzipCompressed(final HttpResponse response) {
+        final Header[] encodings = response.getHeaders("Content-Encoding");
         if (encodings == null) {
           return false;
         }
-        for (String encoding : encodings) {
-          if ("gzip".equals(encoding)) {
+        for (final Header encoding : encodings) {
+          if ("gzip".equals(encoding.getValue())) {
             return true;
           }
         }
@@ -267,14 +281,15 @@ public class HeliosClient implements AutoCloseable {
     });
   }
 
-  private void checkprotocolVersionStatus(final HttpURLConnection connection) {
-    final Status versionStatus = getVersionStatus(connection);
+  private void checkprotocolVersionStatus(final HttpResponse response) {
+    final Status versionStatus = getVersionStatus(response);
     if (versionStatus == null) {
       log.debug("Server didn't return a version header!");
       return; // shouldn't happen really
     }
 
-    final String serverVersion = connection.getHeaderField(HELIOS_SERVER_VERSION_HEADER);
+    final Header versionHeader = response.getLastHeader(HELIOS_SERVER_VERSION_HEADER);
+    final String serverVersion = versionHeader == null ? null : versionHeader.getValue();
     if ((versionStatus == VersionCompatibility.Status.MAYBE) &&
         (versionWarningLogged.compareAndSet(false, true))) {
       log.warn("Your Helios client version [{}] is ahead of the server [{}].  This will"
@@ -284,10 +299,10 @@ public class HeliosClient implements AutoCloseable {
     }
   }
 
-  private Status getVersionStatus(final HttpURLConnection connection) {
-    final String status = connection.getHeaderField(HELIOS_VERSION_STATUS_HEADER);
-    if (status != null) {
-      return VersionCompatibility.Status.valueOf(status);
+  private Status getVersionStatus(final HttpResponse response) {
+    final Header status = response.getLastHeader(HELIOS_VERSION_STATUS_HEADER);
+    if (status != null && !isNullOrEmpty(status.getValue())) {
+      return VersionCompatibility.Status.valueOf(status.getValue());
     }
     return null;
   }
@@ -304,8 +319,8 @@ public class HeliosClient implements AutoCloseable {
   /**
    * Sets up a connection, retrying on connect failure.
    */
-  private HttpURLConnection connect(final URI uri, final String method, final byte[] entity,
-                                    final Map<String, List<String>> headers)
+  private CloseableHttpResponse connect(final URI uri, final String method, final byte[] entity,
+                                        final Map<String, List<String>> headers)
       throws URISyntaxException, IOException, TimeoutException, InterruptedException,
              HeliosException {
     final long deadline = currentTimeMillis() + RETRY_TIMEOUT_MILLIS;
@@ -318,18 +333,22 @@ public class HeliosClient implements AutoCloseable {
       log.debug("endpoint uris are {}", endpoints);
 
       // Resolve hostname into IPs so client will round-robin and retry for multiple A records.
-      // Keep a mapping of IPs to hostnames for TLS verification.
+      // Keep a mapping of IPs to hostnames to set server name indication (SNI)
       final List<URI> ipEndpoints = Lists.newArrayList();
       final Map<URI, URI> ipToHostnameUris = Maps.newHashMap();
 
       for (final URI hnUri : endpoints) {
-        final InetAddress[] ips = InetAddress.getAllByName(hnUri.getHost());
-        for (final InetAddress ip : ips) {
-          final URI ipUri = new URI(
-              hnUri.getScheme(), hnUri.getUserInfo(), ip.getHostAddress(), hnUri.getPort(),
-              hnUri.getPath(), hnUri.getQuery(), hnUri.getFragment());
-          ipEndpoints.add(ipUri);
-          ipToHostnameUris.put(ipUri, hnUri);
+        try {
+          final InetAddress[] ips = InetAddress.getAllByName(hnUri.getHost());
+          for (final InetAddress ip : ips) {
+            final URI ipUri = new URI(
+                hnUri.getScheme(), hnUri.getUserInfo(), ip.getHostAddress(), hnUri.getPort(),
+                hnUri.getPath(), hnUri.getQuery(), hnUri.getFragment());
+            ipEndpoints.add(ipUri);
+            ipToHostnameUris.put(ipUri, hnUri);
+          }
+        } catch (UnknownHostException e) {
+          log.warn("Unable to resolve hostname {} into IP address: {}", hnUri.getHost(), e);
         }
       }
 
@@ -366,9 +385,9 @@ public class HeliosClient implements AutoCloseable {
     throw new TimeoutException("Timed out connecting to master");
   }
 
-  private HttpURLConnection connect0(final URI ipUri, final String method, final byte[] entity,
-                                     final Map<String, List<String>> headers,
-                                     final String hostname)
+  private CloseableHttpResponse connect0(final URI ipUri, final String method, final byte[] entity,
+                                         final Map<String, List<String>> headers,
+                                         final String hostname)
       throws IOException {
     if (log.isTraceEnabled()) {
       log.trace("req: {} {} {} {} {} {}", method, ipUri, headers.size(),
@@ -378,65 +397,61 @@ public class HeliosClient implements AutoCloseable {
       log.debug("req: {} {} {} {}", method, ipUri, headers.size(), entity.length);
     }
 
-    final URLConnection urlConnection = ipUri.toURL().openConnection();
-    final HttpURLConnection connection = (HttpURLConnection) urlConnection;
+    final RequestConfig requestConfig = RequestConfig.custom()
+        .setRedirectsEnabled(false)
+        .setConnectTimeout((int) HTTP_TIMEOUT_MILLIS)
+        .setSocketTimeout((int) HTTP_TIMEOUT_MILLIS)
+        .build();
 
-    // We verify the TLS certificate against the original hostname since verifying against the
-    // IP address will fail
-    if (urlConnection instanceof HttpsURLConnection) {
-      System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
-      connection.setRequestProperty("Host", hostname);
-      ((HttpsURLConnection) connection).setHostnameVerifier(new HostnameVerifier() {
-        @Override
-        public boolean verify(String ip, SSLSession sslSession) {
-          final String tHostname = hostname.endsWith(".") ?
-                                   hostname.substring(0, hostname.length() - 1) : hostname;
-          return new DefaultHostnameVerifier().verify(tHostname, sslSession);
-        }
-      });
-    }
+    final RequestBuilder requestBuilder = RequestBuilder
+        .create(method)
+        .setUri(ipUri)
+        .setConfig(requestConfig)
+        .addHeader("Accept-Encoding", "gzip");
 
-    connection.setRequestProperty("Accept-Encoding", "gzip");
-    connection.setInstanceFollowRedirects(false);
-    connection.setConnectTimeout((int) HTTP_TIMEOUT_MILLIS);
-    connection.setReadTimeout((int) HTTP_TIMEOUT_MILLIS);
     for (Map.Entry<String, List<String>> header : headers.entrySet()) {
       for (final String value : header.getValue()) {
-        connection.addRequestProperty(header.getKey(), value);
+        requestBuilder.addHeader(header.getKey(), value);
       }
     }
+
     if (entity.length > 0) {
-      connection.setDoOutput(true);
-      connection.getOutputStream().write(entity);
+      requestBuilder.setEntity(new ByteArrayEntity(entity));
     }
-    if (urlConnection instanceof HttpsURLConnection) {
-      setRequestMethod(connection, method, true);
-    } else {
-      setRequestMethod(connection, method, false);
-    }
-    connection.getResponseCode();
-    return connection;
+
+    final Registry<ConnectionSocketFactory> socketFactoryRegistry =
+        RegistryBuilder.<ConnectionSocketFactory>create()
+            .register("http", PlainConnectionSocketFactory.getSocketFactory())
+            .register("https", SSLConnectionSocketFactory.getSocketFactory())
+            .build();
+
+    final DnsResolver dnsResolver = new DnsResolver() {
+      @Override
+      public InetAddress[] resolve(final String ignored) throws UnknownHostException {
+        // Return a fixed IP address since we already know we want to connect to this host.
+        // This is really just a roundabout way to have the right SNI.
+        final String ip = ipUri.getHost();
+
+        // Strip out the zone index from IPv6 addresses
+        final String ipWithoutZone = ip.replaceFirst("%\\d+\\]", "]");
+        return new InetAddress[]{InetAddresses.forUriString(ipWithoutZone)};
+      }
+    };
+
+    final BasicHttpClientConnectionManager connManager =
+        new BasicHttpClientConnectionManager(socketFactoryRegistry, null, null, dnsResolver);
+
+    final CloseableHttpClient httpClient = HttpClients.custom()
+        .setConnectionManager(connManager)
+        .build();
+    final String tHostname = hostname.endsWith(".") ?
+                             hostname.substring(0, hostname.length() - 1) : hostname;
+    return httpClient.execute(new HttpHost(tHostname, ipUri.getPort(), ipUri.getScheme()),
+                                  requestBuilder.build());
   }
 
   private int positive(final int value) {
     return value < 0 ? value + Integer.MAX_VALUE : value;
-  }
-
-  private void setRequestMethod(final HttpURLConnection connection,
-                                final String method,
-                                final boolean isHttps) {
-    // Nasty workaround for ancient HttpURLConnection only supporting few methods
-    final Class<?> httpURLConnectionClass = connection.getClass();
-    try {
-      final Field methodField =
-          isHttps ?
-          httpURLConnectionClass.getSuperclass().getSuperclass().getDeclaredField("method") :
-          httpURLConnectionClass.getSuperclass().getDeclaredField("method");
-      methodField.setAccessible(true);
-      methodField.set(connection, method);
-    } catch (NoSuchFieldException | IllegalAccessException e) {
-      throw Throwables.propagate(e);
-    }
   }
 
   private <T> ListenableFuture<T> get(final URI uri, final TypeReference<T> typeReference) {
@@ -644,7 +659,8 @@ public class HeliosClient implements AutoCloseable {
 
   public ListenableFuture<DeploymentGroupStatusResponse> deploymentGroupStatus(final String name) {
     return get(uri(path("/deployment-group/%s/status", name)),
-               new TypeReference<DeploymentGroupStatusResponse>() {});
+               new TypeReference<DeploymentGroupStatusResponse>() {
+               });
   }
 
   public ListenableFuture<CreateDeploymentGroupResponse>
