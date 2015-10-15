@@ -108,6 +108,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
+
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -142,16 +145,71 @@ public class HeliosClient implements AutoCloseable {
   private final AtomicBoolean versionWarningLogged = new AtomicBoolean();
 
   private final String user;
-  private final Supplier<List<URI>> endpointSupplier;
-
+  private final List<URI> ipEndpoints;
+  private final Map<URI, URI> ipToHostnameUris;
+  private final CloseableHttpClient httpClient;
+  private URI selectedIpUri = URI.create("http://lcoalhos:90");
   private final ListeningExecutorService executorService;
 
   HeliosClient(final String user,
                final Supplier<List<URI>> endpointSupplier,
                final ListeningExecutorService executorService) {
     this.user = checkNotNull(user);
-    this.endpointSupplier = checkNotNull(endpointSupplier);
+    checkNotNull(endpointSupplier);
     this.executorService = checkNotNull(executorService);
+
+    final List<URI> endpoints = endpointSupplier.get();
+    if (endpoints.isEmpty()) {
+      throw new RuntimeException("failed to resolve master");
+    }
+    log.debug("endpoint uris are {}", endpoints);
+
+    // Resolve hostnames into IPs so client will round-robin and retry for multiple A records.
+    // Keep a mapping of IPs to hostnames to set server name indication (SNI) for TLS.
+    final List<URI> ipEndpoints = Lists.newArrayList();
+    final Map<URI, URI> ipToHostnameUris = Maps.newHashMap();
+
+    for (final URI hnUri : endpoints) {
+      try {
+        final InetAddress[] ips = InetAddress.getAllByName(hnUri.getHost());
+        for (final InetAddress ip : ips) {
+          final URI ipUri = new URI(
+              hnUri.getScheme(), hnUri.getUserInfo(), ip.getHostAddress(), hnUri.getPort(),
+              hnUri.getPath(), hnUri.getQuery(), hnUri.getFragment());
+          ipEndpoints.add(ipUri);
+          ipToHostnameUris.put(ipUri, hnUri);
+        }
+      } catch (UnknownHostException | URISyntaxException e) {
+        log.warn("Unable to resolve hostname {} into IP address: {}.", hnUri.getHost(), e);
+      }
+    }
+
+    this.ipEndpoints = ipEndpoints;
+    this.ipToHostnameUris = ipToHostnameUris;
+
+    final Registry<ConnectionSocketFactory> socketFactoryRegistry =
+        RegistryBuilder.<ConnectionSocketFactory>create()
+            .register("http", PlainConnectionSocketFactory.getSocketFactory())
+            .register("https", SSLConnectionSocketFactory.getSocketFactory())
+            .build();
+
+    final DnsResolver dnsResolver = new DnsResolver() {
+      @Override
+      public InetAddress[] resolve(final String ignored) throws UnknownHostException {
+        // Return a fixed IP address since we already know we want to connect to this host.
+        // This is just a roundabout way to have the right SNI.
+        final String ip = selectedIpUri.getHost();
+
+        // Strip out the zone index from IPv6 addresses
+        final String ipWithoutZone = ip.replaceFirst("%\\d+\\]", "]");
+        return new InetAddress[]{InetAddresses.forUriString(ipWithoutZone)};
+      }
+    };
+
+    final BasicHttpClientConnectionManager connManager =
+        new BasicHttpClientConnectionManager(socketFactoryRegistry, null, null, dnsResolver);
+
+     this.httpClient = HttpClients.custom().setConnectionManager(connManager).build();
   }
 
   HeliosClient(final String user, final List<URI> endpoints,
@@ -232,7 +290,7 @@ public class HeliosClient implements AutoCloseable {
     return executorService.submit(new Callable<Response>() {
       @Override
       public Response call() throws Exception {
-        final CloseableHttpResponse response = connect(uri, method, entityBytes, headers);
+        try (final CloseableHttpResponse response = connect(uri, method, entityBytes, headers)) {
         final int status = response.getStatusLine().getStatusCode();
         final InputStream rawStream = response.getEntity() == null ?
                                       null : response.getEntity().getContent();
@@ -247,8 +305,12 @@ public class HeliosClient implements AutoCloseable {
             payload.write(buffer, 0, n);
           }
         }
+          HttpsURLConnection conn = null;
+          final SSLSocketFactory sslSocketFactory = conn.getSSLSocketFactory();
+          conn.setSSLSocketFactory();
+          sslSocketFactory.
 
-        final String realUri;
+          final String realUri;
         final Header locHeader = response.getFirstHeader("Location");
         if (locHeader != null && !isNullOrEmpty(locHeader.getValue())) {
           realUri = locHeader.getValue();
@@ -326,32 +388,6 @@ public class HeliosClient implements AutoCloseable {
     final long deadline = currentTimeMillis() + RETRY_TIMEOUT_MILLIS;
     final int offset = ThreadLocalRandom.current().nextInt();
     while (currentTimeMillis() < deadline) {
-      final List<URI> endpoints = endpointSupplier.get();
-      if (endpoints.isEmpty()) {
-        throw new RuntimeException("failed to resolve master");
-      }
-      log.debug("endpoint uris are {}", endpoints);
-
-      // Resolve hostname into IPs so client will round-robin and retry for multiple A records.
-      // Keep a mapping of IPs to hostnames to set server name indication (SNI)
-      final List<URI> ipEndpoints = Lists.newArrayList();
-      final Map<URI, URI> ipToHostnameUris = Maps.newHashMap();
-
-      for (final URI hnUri : endpoints) {
-        try {
-          final InetAddress[] ips = InetAddress.getAllByName(hnUri.getHost());
-          for (final InetAddress ip : ips) {
-            final URI ipUri = new URI(
-                hnUri.getScheme(), hnUri.getUserInfo(), ip.getHostAddress(), hnUri.getPort(),
-                hnUri.getPath(), hnUri.getQuery(), hnUri.getFragment());
-            ipEndpoints.add(ipUri);
-            ipToHostnameUris.put(ipUri, hnUri);
-          }
-        } catch (UnknownHostException e) {
-          log.warn("Unable to resolve hostname {} into IP address: {}", hnUri.getHost(), e);
-        }
-      }
-
       for (int i = 0; i < ipEndpoints.size() && currentTimeMillis() < deadline; i++) {
         final URI ipEndpoint = ipEndpoints.get(positive(offset + i) % ipEndpoints.size());
         final String fullpath = ipEndpoint.getPath() + uri.getPath();
@@ -419,33 +455,9 @@ public class HeliosClient implements AutoCloseable {
       requestBuilder.setEntity(new ByteArrayEntity(entity));
     }
 
-    final Registry<ConnectionSocketFactory> socketFactoryRegistry =
-        RegistryBuilder.<ConnectionSocketFactory>create()
-            .register("http", PlainConnectionSocketFactory.getSocketFactory())
-            .register("https", SSLConnectionSocketFactory.getSocketFactory())
-            .build();
-
-    final DnsResolver dnsResolver = new DnsResolver() {
-      @Override
-      public InetAddress[] resolve(final String ignored) throws UnknownHostException {
-        // Return a fixed IP address since we already know we want to connect to this host.
-        // This is really just a roundabout way to have the right SNI.
-        final String ip = ipUri.getHost();
-
-        // Strip out the zone index from IPv6 addresses
-        final String ipWithoutZone = ip.replaceFirst("%\\d+\\]", "]");
-        return new InetAddress[]{InetAddresses.forUriString(ipWithoutZone)};
-      }
-    };
-
-    final BasicHttpClientConnectionManager connManager =
-        new BasicHttpClientConnectionManager(socketFactoryRegistry, null, null, dnsResolver);
-
-    final CloseableHttpClient httpClient = HttpClients.custom()
-        .setConnectionManager(connManager)
-        .build();
     final String tHostname = hostname.endsWith(".") ?
                              hostname.substring(0, hostname.length() - 1) : hostname;
+    this.selectedIpUri = ipUri;
     return httpClient.execute(new HttpHost(tHostname, ipUri.getPort(), ipUri.getScheme()),
                                   requestBuilder.build());
   }
