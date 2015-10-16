@@ -75,6 +75,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -84,7 +85,10 @@ import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.transform;
 import static com.google.common.util.concurrent.Futures.withFallback;
 import static com.google.common.util.concurrent.MoreExecutors.getExitingExecutorService;
+import static com.spotify.helios.common.VersionCompatibility.HELIOS_SERVER_VERSION_HEADER;
+import static com.spotify.helios.common.VersionCompatibility.HELIOS_VERSION_STATUS_HEADER;
 import static java.lang.String.format;
+import static java.lang.System.currentTimeMillis;
 import static java.net.HttpURLConnection.HTTP_BAD_METHOD;
 import static java.net.HttpURLConnection.HTTP_BAD_REQUEST;
 import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
@@ -94,12 +98,12 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static com.spotify.helios.common.VersionCompatibility.HELIOS_SERVER_VERSION_HEADER;
-import static com.spotify.helios.common.VersionCompatibility.HELIOS_VERSION_STATUS_HEADER;
 
 public class HeliosClient implements AutoCloseable {
 
   private static final Logger log = LoggerFactory.getLogger(HeliosClient.class);
+
+  private static final long RETRY_TIMEOUT_MILLIS = SECONDS.toMillis(60);
 
   private final String user;
   private final RequestDispatcher dispatcher;
@@ -170,6 +174,16 @@ public class HeliosClient implements AutoCloseable {
       entityBytes = Json.asBytesUnchecked(entity);
     } else {
       entityBytes = new byte[]{};
+    }
+
+    final long deadline = currentTimeMillis() + RETRY_TIMEOUT_MILLIS;
+    final int offset = ThreadLocalRandom.current().nextInt();
+    while (currentTimeMillis() < deadline) {
+      final List<URI> endpoints = endpointSupplier.get();
+      if (endpoints.isEmpty()) {
+        throw new RuntimeException("failed to resolve master");
+      }
+      log.debug("endpoint uris are {}", endpoints);
     }
 
     final ListenableFuture<Response> f = dispatcher.request(uri, method, entityBytes, headers);
