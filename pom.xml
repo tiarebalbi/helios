@@ -117,6 +117,7 @@
     <module>helios-authentication</module>
     <module>helios-client</module>
     <module>helios-crtauth</module>
+    <module>helios-client-crtauth</module>
     <module>helios-integration-tests</module>
     <module>helios-tools</module>
     <module>helios-testing</module>
